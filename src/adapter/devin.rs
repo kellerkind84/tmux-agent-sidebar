@@ -19,19 +19,29 @@ impl DevinAdapter {
     /// `SessionStart`, `SessionEnd`.
     ///
     /// Caveats:
-    /// - `PreToolUse` is supported by Devin CLI but not yet wired — no
-    ///   existing `AgentEventKind` maps cleanly onto a "before the tool
-    ///   runs" moment without also modeling permission decisions, and
-    ///   `PostToolUse` already covers the activity log. Same rationale the
-    ///   Codex adapter uses for leaving its `PreToolUse` trigger unwired.
+    /// - `PreToolUse` is registered here *only* for Devin's two
+    ///   interactive tools, `ask_user_question` (a multi-choice question
+    ///   the agent poses mid-turn) and `exit_plan_mode` (presenting a
+    ///   plan for approval). Both block the CLI on a selection UI with no
+    ///   corresponding `PostToolUse`-adjacent "resolved" signal of their
+    ///   own until the user answers, and neither is a permission check on
+    ///   an existing tool, so nothing else in the hook set reports this
+    ///   state. `PreToolUse` for every other tool is intentionally left
+    ///   unwired (see below) and routed to `None` in `parse()`.
     /// - `PostCompaction` is not wired — there is no existing
     ///   `AgentEventKind` for compaction/summary events, and none of the
     ///   other adapters (Claude included) model one either.
-    /// - `PermissionRequest` maps to `AgentEventKind::PermissionDenied`.
-    ///   This is the closest existing kind (a permission-related pane
-    ///   status/attention update); Devin's hook fires when a permission
-    ///   *decision is needed* rather than only on denial, but reusing the
-    ///   existing kind avoids introducing a near-duplicate variant.
+    /// - `PermissionRequest` and the two interactive `PreToolUse` cases
+    ///   above both map to `AgentEventKind::PermissionDenied`. This is the
+    ///   closest existing kind for "the sidebar should show waiting on a
+    ///   pane blocked on a human decision"; Devin's `PermissionRequest`
+    ///   hook fires when a decision is needed rather than only on denial,
+    ///   and the interactive tools aren't permission checks at all, but
+    ///   reusing the existing kind avoids introducing a near-duplicate
+    ///   variant. Both native triggers are wired to the same
+    ///   `hook.sh devin permission-denied` command; `parse()`
+    ///   distinguishes them via `hook_event_name` + `tool_name` so a
+    ///   `PreToolUse` for e.g. `exec` or `write` is correctly ignored.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "SessionStart",
@@ -54,6 +64,11 @@ impl DevinAdapter {
             kind: AgentEventKind::PermissionDenied,
         },
         HookRegistration {
+            trigger: "PreToolUse (ask_user_question / exit_plan_mode only)",
+            matcher: None,
+            kind: AgentEventKind::PermissionDenied,
+        },
+        HookRegistration {
             trigger: "Stop",
             matcher: None,
             kind: AgentEventKind::Stop,
@@ -64,6 +79,14 @@ impl DevinAdapter {
             kind: AgentEventKind::ActivityLog,
         },
     ];
+
+    /// Devin tools that block the CLI on a human decision via `PreToolUse`
+    /// rather than via `PermissionRequest`. Kept in sync with
+    /// `agent-tmux-manager`'s `atm-devin-adapter`, which validated these
+    /// tool names against real Devin CLI behavior.
+    fn is_interactive_tool(tool_name: &str) -> bool {
+        matches!(tool_name, "ask_user_question" | "exit_plan_mode")
+    }
 }
 
 impl EventAdapter for DevinAdapter {
@@ -90,14 +113,27 @@ impl EventAdapter for DevinAdapter {
                 agent_id: None,
                 session_id: optional_str(input, "session_id"),
             }),
-            "permission-denied" => Some(AgentEvent::PermissionDenied {
-                agent: DEVIN_AGENT.into(),
-                cwd: json_str(input, "cwd").into(),
-                permission_mode: String::new(),
-                worktree: None,
-                agent_id: None,
-                session_id: optional_str(input, "session_id"),
-            }),
+            "permission-denied" => {
+                // Devin's real PermissionRequest hook and its two
+                // interactive tools (ask_user_question, exit_plan_mode,
+                // fired via PreToolUse) are both wired to this same
+                // command. A PreToolUse for any other tool must be
+                // ignored -- see the HOOK_REGISTRATIONS doc comment.
+                let tool_name = json_str(input, "tool_name");
+                if json_str(input, "hook_event_name") == "PreToolUse"
+                    && !Self::is_interactive_tool(tool_name)
+                {
+                    return None;
+                }
+                Some(AgentEvent::PermissionDenied {
+                    agent: DEVIN_AGENT.into(),
+                    cwd: json_str(input, "cwd").into(),
+                    permission_mode: String::new(),
+                    worktree: None,
+                    agent_id: None,
+                    session_id: optional_str(input, "session_id"),
+                })
+            }
             "stop" => Some(AgentEvent::Stop {
                 agent: DEVIN_AGENT.into(),
                 cwd: json_str(input, "cwd").into(),
@@ -266,6 +302,54 @@ mod tests {
     }
 
     #[test]
+    fn pre_tool_use_ask_user_question_becomes_permission_denied() {
+        // The multi-choice question case: Devin blocks on a selection UI
+        // via a real ask_user_question tool call, with PreToolUse as the
+        // only signal.
+        let adapter = DevinAdapter;
+        let input = json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "ask_user_question",
+            "cwd": "/tmp",
+            "session_id": "sess-devin-question"
+        });
+        let event = adapter.parse("permission-denied", &input).unwrap();
+        assert_eq!(
+            event,
+            AgentEvent::PermissionDenied {
+                agent: DEVIN_AGENT.into(),
+                cwd: "/tmp".into(),
+                permission_mode: "".into(),
+                worktree: None,
+                agent_id: None,
+                session_id: Some("sess-devin-question".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn pre_tool_use_exit_plan_mode_becomes_permission_denied() {
+        let adapter = DevinAdapter;
+        let input = json!({"hook_event_name": "PreToolUse", "tool_name": "exit_plan_mode"});
+        assert!(adapter.parse("permission-denied", &input).is_some());
+    }
+
+    #[test]
+    fn pre_tool_use_non_interactive_tool_ignored() {
+        // A normal tool starting (e.g. exec, write) must not be treated
+        // as "waiting on the user" just because it shares the
+        // permission-denied command with the interactive tools.
+        let adapter = DevinAdapter;
+        for tool_name in ["exec", "write", "edit", "read"] {
+            let input = json!({"hook_event_name": "PreToolUse", "tool_name": tool_name});
+            assert!(
+                adapter.parse("permission-denied", &input).is_none(),
+                "tool {tool_name} should not produce an event"
+            );
+        }
+    }
+
+    #[test]
     fn stop_has_no_response() {
         let adapter = DevinAdapter;
         let input = json!({"cwd": "/tmp", "stop_hook_active": false, "session_id": "sess-devin-4"});
@@ -318,9 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn pre_tool_use_not_supported() {
-        // PreToolUse is a real Devin CLI trigger but is not yet wired to
-        // an internal AgentEventKind (see HOOK_REGISTRATIONS doc comment).
+    fn pre_tool_use_kebab_name_unused() {
+        // PreToolUse is wired via the shared "permission-denied" command
+        // (see HOOK_REGISTRATIONS doc comment), not its own "pre-tool-use"
+        // event name -- that string is never sent by hook.sh and must not
+        // accidentally match anything.
         assert!(DevinAdapter.parse("pre-tool-use", &json!({})).is_none());
     }
 
