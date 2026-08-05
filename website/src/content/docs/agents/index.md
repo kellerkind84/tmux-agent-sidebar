@@ -1,9 +1,9 @@
 ---
 title: Agent support overview
-description: What the sidebar shows for Claude Code, Codex, and OpenCode, side by side.
+description: What the sidebar shows for Claude Code, Codex, OpenCode, Devin CLI, GitHub Copilot CLI, and Hermes Agent, side by side.
 ---
 
-Claude Code, Codex, and OpenCode work with the sidebar, but they expose different sets of hooks — so the sidebar's surface area is narrower for Codex and OpenCode than it is for Claude Code.
+Claude Code, Codex, OpenCode, Devin CLI, GitHub Copilot CLI, and Hermes Agent all work with the sidebar, but they expose different sets of hooks — so the sidebar's surface area is narrower for the non-Claude agents. See the per-agent pages for [Devin CLI](/tmux-agent-sidebar/agents/devin/), [Copilot CLI](/tmux-agent-sidebar/agents/copilot/), and [Hermes Agent](/tmux-agent-sidebar/agents/hermes/) for their full feature breakdowns.
 
 ## Feature support by agent
 

@@ -85,6 +85,10 @@ pub const PANE_WORKTREE_NAME: &str = "@pane_worktree_name";
 pub const SIDEBAR_PID: &str = "@sidebar_pid";
 pub const SIDEBAR_WIDTH: &str = "@sidebar_width";
 pub const SIDEBAR_POSITION: &str = "@sidebar_position";
+/// How panes are grouped in the sidebar: `repo` (default — one group per
+/// repository, merging panes across tmux sessions) or `session` (one
+/// group per tmux session). See `crate::group::GroupBy`.
+pub const SIDEBAR_GROUP_BY: &str = "@sidebar_group_by";
 pub const SIDEBAR_FILTER: &str = "@sidebar_filter";
 pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
@@ -92,6 +96,15 @@ pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
+/// Window-scoped snapshot of `#{window_layout}` taken right before the
+/// sidebar pane is created. `split-window -hfb`/`-hf` (full-window split)
+/// proportionally shrinks every existing pane to make room for the
+/// sidebar, but `kill-pane` only returns the freed columns to the
+/// sidebar's immediate structural sibling — so without this snapshot,
+/// repeated open/close cycles bleed columns from any other pane one
+/// column at a time. Restoring this exact layout string on close undoes
+/// the open-time shrink precisely. See `cmd_toggle` in `cli/toggle.rs`.
+pub const SIDEBAR_SAVED_LAYOUT: &str = "@sidebar_saved_layout";
 
 pub const SIDEBAR_COLOR_ACCENT: &str = "@sidebar_color_accent";
 pub const SIDEBAR_COLOR_BORDER: &str = "@sidebar_color_border";
@@ -104,6 +117,9 @@ pub const SIDEBAR_COLOR_FILTER_INACTIVE: &str = "@sidebar_color_filter_inactive"
 pub const SIDEBAR_COLOR_AGENT_CLAUDE: &str = "@sidebar_color_agent_claude";
 pub const SIDEBAR_COLOR_AGENT_CODEX: &str = "@sidebar_color_agent_codex";
 pub const SIDEBAR_COLOR_AGENT_OPENCODE: &str = "@sidebar_color_agent_opencode";
+pub const SIDEBAR_COLOR_AGENT_DEVIN: &str = "@sidebar_color_agent_devin";
+pub const SIDEBAR_COLOR_AGENT_COPILOT: &str = "@sidebar_color_agent_copilot";
+pub const SIDEBAR_COLOR_AGENT_HERMES: &str = "@sidebar_color_agent_hermes";
 pub const SIDEBAR_COLOR_PET_BODY: &str = "@sidebar_color_pet_body";
 pub const SIDEBAR_COLOR_PET_EYE: &str = "@sidebar_color_pet_eye";
 pub const SIDEBAR_COLOR_TEXT_ACTIVE: &str = "@sidebar_color_text_active";

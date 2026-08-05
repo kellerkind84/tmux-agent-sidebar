@@ -1,5 +1,8 @@
 pub mod claude;
 pub mod codex;
+pub mod copilot;
+pub mod devin;
+pub mod hermes;
 pub mod opencode;
 
 use crate::event::AgentEventKind;

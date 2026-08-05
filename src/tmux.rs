@@ -6,7 +6,7 @@ mod types;
 
 pub use commands::{
     display_message, kill_window, new_window, pane_session_name, run_tmux, run_tmux_capture,
-    select_pane, send_command, set_window_option,
+    select_pane, send_command, set_window_option, unset_window_option,
 };
 pub use options::{
     BG_CMD_PLACEHOLDER, PANE_AGENT, PANE_ATTENTION, PANE_BG_CMD, PANE_CWD, PANE_NAME,
@@ -16,6 +16,7 @@ pub use options::{
     PANE_STARTED_AT, PANE_STATUS, PANE_SUBAGENTS, PANE_WAIT_REASON, PANE_WORKTREE_BRANCH,
     PANE_WORKTREE_NAME, SIDEBAR_BOTTOM_HEIGHT, SIDEBAR_COLOR_ACCENT,
     SIDEBAR_COLOR_ACTIVITY_TIMESTAMP, SIDEBAR_COLOR_AGENT_CLAUDE, SIDEBAR_COLOR_AGENT_CODEX,
+    SIDEBAR_COLOR_AGENT_COPILOT, SIDEBAR_COLOR_AGENT_DEVIN, SIDEBAR_COLOR_AGENT_HERMES,
     SIDEBAR_COLOR_AGENT_OPENCODE, SIDEBAR_COLOR_ALL, SIDEBAR_COLOR_BORDER, SIDEBAR_COLOR_BRANCH,
     SIDEBAR_COLOR_COMMIT_HASH, SIDEBAR_COLOR_DIFF_ADDED, SIDEBAR_COLOR_DIFF_DELETED,
     SIDEBAR_COLOR_ERROR, SIDEBAR_COLOR_FILE_CHANGE, SIDEBAR_COLOR_FILTER_INACTIVE,
@@ -24,12 +25,12 @@ pub use options::{
     SIDEBAR_COLOR_SECTION_TITLE, SIDEBAR_COLOR_SELECTION, SIDEBAR_COLOR_SESSION,
     SIDEBAR_COLOR_SUBAGENT, SIDEBAR_COLOR_TASK_PROGRESS, SIDEBAR_COLOR_TEXT_ACTIVE,
     SIDEBAR_COLOR_TEXT_INACTIVE, SIDEBAR_COLOR_TEXT_MUTED, SIDEBAR_COLOR_WAIT_REASON,
-    SIDEBAR_COLOR_WAITING, SIDEBAR_CURSOR, SIDEBAR_FILTER, SIDEBAR_ICON_ALL,
+    SIDEBAR_COLOR_WAITING, SIDEBAR_CURSOR, SIDEBAR_FILTER, SIDEBAR_GROUP_BY, SIDEBAR_ICON_ALL,
     SIDEBAR_ICON_BACKGROUND, SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE, SIDEBAR_ICON_RUNNING,
     SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING, SIDEBAR_NOTIFICATIONS,
     SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER,
-    SIDEBAR_WIDTH, get_all_global_options, get_option, get_pane_option_value, set_pane_option,
-    unset_pane_option,
+    SIDEBAR_SAVED_LAYOUT, SIDEBAR_WIDTH, get_all_global_options, get_option, get_pane_option_value,
+    set_pane_option, unset_pane_option,
 };
 pub use panes::{
     find_active_pane, focused_pane_path, get_pane_path, get_sidebar_pane_info,
@@ -38,8 +39,8 @@ pub use panes::{
 pub use query::query_sessions;
 pub(crate) use query::query_sessions_with_process_snapshot;
 pub use types::{
-    AgentType, CLAUDE_AGENT, CODEX_AGENT, OPENCODE_AGENT, PaneInfo, PaneStatus, PermissionMode,
-    SessionInfo, WindowInfo, WorktreeMetadata,
+    AgentType, CLAUDE_AGENT, CODEX_AGENT, COPILOT_AGENT, DEVIN_AGENT, HERMES_AGENT, OPENCODE_AGENT,
+    PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,
 };
 
 #[cfg(test)]
