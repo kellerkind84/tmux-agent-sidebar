@@ -25,7 +25,7 @@ impl CopilotAdapter {
     ///
     /// Copilot CLI's hook event enum (subset wired here): `sessionStart`,
     /// `sessionEnd`, `userPromptSubmitted`, `preToolUse`, `postToolUse`,
-    /// `agentStop`. Copilot also exposes `permissionRequest`,
+    /// `agentStop`, `notification`. Copilot also exposes `permissionRequest`,
     /// `postToolUseFailure`, `preCompact`, `subagentStart`, `subagentStop`,
     /// `errorOccurred`, and `userPromptTransformed`, but those are out of
     /// scope for this adapter.
@@ -38,6 +38,21 @@ impl CopilotAdapter {
     /// - `agentStop`'s payload has no assistant-response text field (only
     ///   `transcriptPath`), so `AgentEvent::Stop.last_message` is always
     ///   empty for Copilot.
+    /// - `notification` is the event that actually covers "the agent is
+    ///   waiting on you" states: per GitHub's hooks reference its
+    ///   `notification_type` field takes values `permission_prompt` (a
+    ///   tool wants approval) and `elicitation_dialog` (the agent is
+    ///   asking a clarifying/multi-choice question) among others. Both
+    ///   values already match the existing `is_permission_wait_reason`
+    ///   allowlist used by Claude's own Notification handling, so mapping
+    ///   this straight onto `AgentEventKind::Notification` (same as
+    ///   Claude) makes the sidebar show "waiting" for Copilot's
+    ///   permission prompts *and* its multi-choice questions with no
+    ///   further handler changes needed. `permissionRequest` (the
+    ///   separate hook that can programmatically allow/deny) is left
+    ///   unwired — it fires for every tool call, not just the ones that
+    ///   end up needing a human decision, so it isn't a useful
+    ///   "waiting" signal on its own.
     pub const HOOK_REGISTRATIONS: &'static [HookRegistration] = &[
         HookRegistration {
             trigger: "sessionStart",
@@ -53,6 +68,11 @@ impl CopilotAdapter {
             trigger: "userPromptSubmitted",
             matcher: None,
             kind: AgentEventKind::UserPromptSubmit,
+        },
+        HookRegistration {
+            trigger: "notification",
+            matcher: None,
+            kind: AgentEventKind::Notification,
         },
         HookRegistration {
             trigger: "agentStop",
@@ -91,6 +111,19 @@ impl EventAdapter for CopilotAdapter {
                 agent_id: None,
                 session_id: session_id_of(input),
             }),
+            "notification" => {
+                let wait_reason = json_str(input, "notification_type");
+                Some(AgentEvent::Notification {
+                    agent: COPILOT_AGENT.into(),
+                    cwd: json_str(input, "cwd").into(),
+                    permission_mode: String::new(),
+                    wait_reason: wait_reason.into(),
+                    meta_only: false,
+                    worktree: None,
+                    agent_id: None,
+                    session_id: session_id_of(input),
+                })
+            }
             "stop" => Some(AgentEvent::Stop {
                 agent: COPILOT_AGENT.into(),
                 cwd: json_str(input, "cwd").into(),
@@ -214,6 +247,63 @@ mod tests {
                 session_id: Some("ses-copilot-2".into()),
             }
         );
+    }
+
+    #[test]
+    fn notification_captures_permission_prompt_wait_reason() {
+        let adapter = CopilotAdapter;
+        let input = json!({
+            "sessionId": "ses-copilot-notif",
+            "cwd": "/tmp",
+            "message": "Permission needed to run a command",
+            "title": "Permission needed",
+            "notification_type": "permission_prompt"
+        });
+        let event = adapter.parse("notification", &input).unwrap();
+        assert_eq!(
+            event,
+            AgentEvent::Notification {
+                agent: COPILOT_AGENT.into(),
+                cwd: "/tmp".into(),
+                permission_mode: "".into(),
+                wait_reason: "permission_prompt".into(),
+                meta_only: false,
+                worktree: None,
+                agent_id: None,
+                session_id: Some("ses-copilot-notif".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn notification_captures_elicitation_dialog_wait_reason() {
+        // This is the multi-choice / clarifying-question case: Copilot's
+        // hooks reference documents `elicitation_dialog` as firing when
+        // "the agent requests additional information from the user."
+        let adapter = CopilotAdapter;
+        let input = json!({
+            "notification_type": "elicitation_dialog",
+            "message": "Which dotfile manager should we use?"
+        });
+        let event = adapter.parse("notification", &input).unwrap();
+        match event {
+            AgentEvent::Notification { wait_reason, .. } => {
+                assert_eq!(wait_reason, "elicitation_dialog");
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn notification_missing_type_defaults_to_empty_wait_reason() {
+        let adapter = CopilotAdapter;
+        let event = adapter.parse("notification", &json!({})).unwrap();
+        match event {
+            AgentEvent::Notification { wait_reason, .. } => {
+                assert_eq!(wait_reason, "");
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
     }
 
     #[test]

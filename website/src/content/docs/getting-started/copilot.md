@@ -41,10 +41,20 @@ Create `.github/hooks/tmux-agent-sidebar.json`:
     ],
     "postToolUse": [
       { "type": "command", "bash": "~/.tmux/plugins/tmux-agent-sidebar/hook.sh copilot activity-log" }
+    ],
+    "notification": [
+      { "type": "command", "bash": "~/.tmux/plugins/tmux-agent-sidebar/hook.sh copilot notification" }
     ]
   }
 }
 ```
+
+The `notification` hook is what makes the sidebar show **waiting** (rather
+than running) when Copilot needs something from you — both for a plain
+permission prompt (`notification_type: "permission_prompt"`) and for a
+multi-choice / clarifying question the agent asks
+(`notification_type: "elicitation_dialog"`). Without it wired, the sidebar
+has no way to tell "actively working" apart from "blocked on your answer".
 
 Adjust the `hook.sh` path if your plugin lives somewhere other than
 `~/.tmux/plugins/tmux-agent-sidebar`. On Windows, also set a `powershell`
