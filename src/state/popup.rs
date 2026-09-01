@@ -494,6 +494,7 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
     }

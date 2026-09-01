@@ -75,6 +75,10 @@ impl AppState {
         let group_by = crate::group::GroupBy::from_setting(
             &tmux::get_option(tmux::SIDEBAR_GROUP_BY).unwrap_or_default(),
         );
+        // `sessions` already reflects `@sidebar_show_windows` — the
+        // toggle is applied once, up front, in `refresh()` by passing it
+        // into `query_sessions_with_process_snapshot`, so there's no
+        // separate display-time filter needed here.
         self.repo_groups = crate::group::group_panes(&sessions, group_by);
         if !self.sessions.dirty
             && self
@@ -91,6 +95,20 @@ impl AppState {
         self.prune_pane_states_to_current_panes();
         self.rebuild_row_targets();
         self.find_focused_pane();
+    }
+
+    /// Flip `@sidebar_show_windows` at runtime (bound to a keypress).
+    /// Writes straight to the tmux global option so every sidebar
+    /// instance picks up the change on its next refresh tick — mirrors
+    /// how `@sidebar_group_by` is read live rather than cached.
+    pub fn toggle_show_windows(&self) {
+        let next = !tmux::get_bool_option(tmux::SIDEBAR_SHOW_WINDOWS);
+        let _ = tmux::run_tmux(&[
+            "set",
+            "-g",
+            tmux::SIDEBAR_SHOW_WINDOWS,
+            if next { "on" } else { "off" },
+        ]);
     }
 
     fn clear_dead_agent_metadata(pane_id: &str) {
@@ -162,10 +180,31 @@ impl AppState {
     pub fn refresh(&mut self) -> bool {
         self.refresh_now();
         let (focused, window_active, _, _) = tmux::get_sidebar_pane_info(&self.tmux_pane);
-        let (mut sessions, mut process_snapshot) = tmux::query_sessions_with_process_snapshot();
+        // Read live (like `@sidebar_group_by`) and pushed all the way down
+        // into `query_sessions_with_process_snapshot`: when off, plain
+        // panes are dropped at tmux-format-parse time, so the refresh
+        // cost stays identical to before `@sidebar_show_windows` existed
+        // no matter how many non-agent tmux panes exist on the server.
+        let show_windows = tmux::get_bool_option(tmux::SIDEBAR_SHOW_WINDOWS);
+        let (mut sessions, mut process_snapshot) =
+            tmux::query_sessions_with_process_snapshot(show_windows);
         self.sweep_dead_bg_shells_if_due(&mut sessions, &mut process_snapshot);
+        // Liveness/port scanning only knows how to detect a live *agent*
+        // process, so it must never see the plain (non-agent) panes that
+        // `@sidebar_show_windows` surfaces — otherwise they'd be
+        // "confirmed dead" and evicted within a couple of scan intervals.
+        // `sessions` is already agent-only when the toggle is off, so
+        // this filter (and the clone it requires) is only ever real work
+        // while it's on.
+        let agent_sessions_owned;
+        let agent_sessions: &[SessionInfo] = if show_windows {
+            agent_sessions_owned = crate::group::agent_panes_only(&sessions);
+            &agent_sessions_owned
+        } else {
+            &sessions
+        };
         if let Some(confirmed_dead_panes) =
-            self.refresh_port_data(&sessions, process_snapshot.as_ref())
+            self.refresh_port_data(agent_sessions, process_snapshot.as_ref())
         {
             let sessions =
                 Self::filter_sessions_excluding_dead_panes(sessions, &confirmed_dead_panes);
@@ -530,6 +569,7 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
     }

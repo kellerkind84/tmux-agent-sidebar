@@ -100,6 +100,23 @@ pub(super) fn collect(state: &AppState, width: u16) -> CollectedRows {
 
             let is_active = state.focus_state.focused_pane_id.as_ref() == Some(&pane.pane_id);
 
+            if pane.agent == crate::tmux::AgentType::Unknown {
+                // Plain (non-agent) pane surfaced by `@sidebar_show_windows`:
+                // a single lightweight row rather than the full
+                // status/branch/prompt stack below.
+                collected.lines.push(row::render_plain_pane_line(
+                    pane,
+                    is_selected,
+                    is_active,
+                    width,
+                    &state.icons,
+                    theme,
+                ));
+                collected.line_to_row.push(Some(row_index));
+                row_index += 1;
+                continue;
+            }
+
             let pane_state = state.pane_state(&pane.pane_id);
             let ports = pane_state.map(|s| s.ports.as_slice());
             let task_progress = pane_state.and_then(|s| s.task_progress.as_ref());
@@ -174,8 +191,41 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
+    }
+
+    #[test]
+    fn collect_renders_mixed_agent_and_plain_panes_in_one_group() {
+        // Regression coverage for the `@sidebar_show_windows` rollout: a
+        // group containing both an agent pane and a plain pane must
+        // render both — the plain pane as a single lightweight line, not
+        // silently dropped and not blanking the whole group.
+        let mut state = AppState::new("%0".into());
+        let agent = make_pane("%1", PaneStatus::Running);
+        let mut plain = make_pane("%2", PaneStatus::Unknown);
+        plain.agent = crate::tmux::AgentType::Unknown;
+        plain.window_name = "shell".into();
+        state.repo_groups = vec![RepoGroup {
+            name: "sess".into(),
+            has_focus: false,
+            panes: vec![
+                (agent, PaneGitInfo::default()),
+                (plain, PaneGitInfo::default()),
+            ],
+        }];
+        state.rebuild_row_targets();
+        let collected = collect(&state, 40);
+        let texts: Vec<String> = collected
+            .lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(texts.iter().any(|t: &String| t.contains("claude")));
+        assert!(texts.iter().any(|t: &String| t.contains("shell")));
+        // Both rows must be selectable/navigable.
+        assert_eq!(state.layout.pane_row_targets.len(), 2);
     }
 
     #[test]

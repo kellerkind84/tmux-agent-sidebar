@@ -94,6 +94,11 @@ pub const SIDEBAR_CURSOR: &str = "@sidebar_cursor";
 pub const SIDEBAR_REPO_FILTER: &str = "@sidebar_repo_filter";
 pub const SIDEBAR_BOTTOM_HEIGHT: &str = "@sidebar_bottom_height";
 pub const SIDEBAR_PET: &str = "@sidebar_pet";
+/// Whether plain (non-agent) tmux windows/panes are surfaced as
+/// lightweight, switch-only rows alongside the agent list. Off by
+/// default — see `crate::group::agent_panes_only` and
+/// `AppState::toggle_show_windows`.
+pub const SIDEBAR_SHOW_WINDOWS: &str = "@sidebar_show_windows";
 pub const SIDEBAR_NOTIFICATIONS: &str = "@sidebar_notifications";
 pub const SIDEBAR_NOTIFICATIONS_EVENTS: &str = "@sidebar_notifications_events";
 /// Window-scoped snapshot of `#{window_layout}` taken right before the
@@ -153,6 +158,19 @@ pub fn get_option(name: &str) -> Option<String> {
     run_tmux(&["show", "-gv", name])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Parse a boolean-ish tmux option value. Accepts `on`/`off`, `true`/`false`,
+/// `1`/`0`, `yes`/`no` (case-insensitive); unset or anything else is `false`.
+pub fn parse_bool_flag(value: Option<&str>) -> bool {
+    value
+        .map(|s| s.trim().to_ascii_lowercase())
+        .is_some_and(|s| matches!(s.as_str(), "on" | "true" | "1" | "yes"))
+}
+
+/// Read a boolean tmux global option by name. See [`parse_bool_flag`].
+pub fn get_bool_option(name: &str) -> bool {
+    parse_bool_flag(get_option(name).as_deref())
 }
 
 /// Fetch all global tmux options in a single subprocess call.
@@ -297,6 +315,27 @@ pub mod test_mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_bool_flag_accepts_common_truthy_spellings() {
+        for value in ["on", "ON", "true", "1", "yes"] {
+            assert!(parse_bool_flag(Some(value)), "expected {value} to be true");
+        }
+    }
+
+    #[test]
+    fn parse_bool_flag_defaults_false_for_falsy_or_missing() {
+        for value in [
+            Some("off"),
+            Some("false"),
+            Some("0"),
+            Some("no"),
+            Some(""),
+            None,
+        ] {
+            assert!(!parse_bool_flag(value), "expected {value:?} to be false");
+        }
+    }
 
     #[test]
     fn mock_install_round_trips_pane_option() {

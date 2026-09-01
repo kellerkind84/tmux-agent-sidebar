@@ -1,10 +1,12 @@
 pub mod capture;
+mod digest;
 mod hook;
 mod label;
 pub mod plugin_state;
 pub(crate) mod setup;
 pub(crate) mod shared_html;
 mod spawn;
+mod summary;
 pub(crate) mod toggle;
 
 use std::io::Read;
@@ -25,6 +27,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "set-status" => cmd_set_status(rest),
         "spawn" => spawn::cmd_spawn(rest),
         "capture" => capture::cmd_capture(rest),
+        "summary" => summary::cmd_summary(rest),
+        "digest" => digest::cmd_digest(rest),
         "--version" | "version" => {
             println!("{}", crate::VERSION);
             0

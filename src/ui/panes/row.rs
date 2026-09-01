@@ -1,8 +1,12 @@
-use ratatui::{style::Style, text::Line};
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
 
 use crate::tmux::PaneStatus;
 use crate::ui::colors::ColorTheme;
 use crate::ui::icons::StatusIcons;
+use crate::ui::text::{display_width, truncate_to_width};
 
 mod body;
 mod branch;
@@ -20,6 +24,66 @@ use status::running_icon_for;
 use status::status_row;
 
 pub(super) use branch::sidebar_remove_marker_col;
+
+/// Render a lightweight, single-line row for a plain (non-agent) tmux
+/// pane, shown when `@sidebar_show_windows` is enabled. Unlike agent
+/// rows (which can span several lines of status/branch/prompt detail),
+/// these are intentionally compact: an icon, the window name, and —
+/// when it differs from the window name — the pane's running command.
+pub(super) fn render_plain_pane_line(
+    pane: &crate::tmux::PaneInfo,
+    selected: bool,
+    active: bool,
+    width: usize,
+    icons: &StatusIcons,
+    theme: &ColorTheme,
+) -> Line<'static> {
+    let bg = if selected {
+        Some(theme.selection_bg)
+    } else {
+        None
+    };
+    let ctx = RowCtx {
+        marker_char: if active { SELECTION_MARKER } else { " " },
+        marker_style: if active {
+            match bg {
+                Some(c) => Style::default().fg(theme.accent).bg(c),
+                None => Style::default().fg(theme.accent),
+            }
+        } else {
+            match bg {
+                Some(c) => Style::default().bg(c),
+                None => Style::default(),
+            }
+        },
+        inner_width: width.saturating_sub(2),
+        theme,
+        bg,
+        active,
+    };
+
+    let icon = icons.status_icon(&PaneStatus::Unknown);
+    let label = if !pane.window_name.is_empty() {
+        pane.window_name.as_str()
+    } else if !pane.current_command.is_empty() {
+        pane.current_command.as_str()
+    } else {
+        "pane"
+    };
+    let mut text = format!("{icon} {label}");
+    if !pane.current_command.is_empty() && pane.current_command != label {
+        text.push_str("  ");
+        text.push_str(&pane.current_command);
+    }
+    let text = truncate_to_width(&text, ctx.inner_width);
+    let text_width = display_width(&text);
+
+    let content = vec![Span::styled(
+        text,
+        ctx.apply_bg(Style::default().fg(theme.text_muted)),
+    )];
+    ctx.row_line(content, text_width)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_pane_lines_with_ports(
@@ -133,6 +197,7 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
     }
@@ -142,6 +207,38 @@ mod tests {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    fn plain_pane(window_name: &str, current_command: &str) -> PaneInfo {
+        let mut p = pane(PermissionMode::Default, PaneStatus::Unknown, "");
+        p.agent = AgentType::Unknown;
+        p.window_name = window_name.into();
+        p.current_command = current_command.into();
+        p
+    }
+
+    #[test]
+    fn render_plain_pane_line_shows_window_name_and_command() {
+        let theme = ColorTheme::default();
+        let icons = StatusIcons::default();
+        let p = plain_pane("notes", "vim");
+        let line = render_plain_pane_line(&p, false, false, 40, &icons, &theme);
+        let text = line_text(&line);
+        assert!(text.contains("notes"), "should show window name: {text}");
+        assert!(text.contains("vim"), "should show running command: {text}");
+    }
+
+    #[test]
+    fn render_plain_pane_line_omits_duplicate_command_matching_window_name() {
+        let theme = ColorTheme::default();
+        let icons = StatusIcons::default();
+        // tmux auto-names unrenamed windows after the running command, so
+        // window_name and current_command are often identical — don't show
+        // it twice.
+        let p = plain_pane("zsh", "zsh");
+        let line = render_plain_pane_line(&p, false, false, 40, &icons, &theme);
+        let text = line_text(&line);
+        assert_eq!(text.matches("zsh").count(), 1, "got: {text}");
     }
 
     fn test_ctx<'a>(theme: &'a ColorTheme, inner_width: usize, active: bool) -> RowCtx<'a> {

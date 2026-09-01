@@ -147,6 +147,11 @@ pub(super) fn handle_key_event(
                 state.open_remove_confirm();
             }
         }
+        KeyCode::Char('w') => {
+            if state.focus_state.focus == Focus::Panes {
+                state.toggle_show_windows();
+            }
+        }
         KeyCode::Enter => {
             if state.focus_state.focus == Focus::Panes {
                 state.activate_selected_pane();
@@ -317,6 +322,16 @@ mod tests {
         let mut state = state_with_three_panes();
         let flag = AtomicBool::new(false);
         handle_key_event(key(KeyCode::Char('n')), &mut state, &flag);
+        assert_eq!(state.global.selected_pane_row, 0);
+    }
+
+    #[test]
+    fn bare_w_does_not_move_selection() {
+        // `w` toggles `@sidebar_show_windows` (a tmux global option write),
+        // not pane navigation — it must not shadow selection movement.
+        let mut state = state_with_three_panes();
+        let flag = AtomicBool::new(false);
+        handle_key_event(key(KeyCode::Char('w')), &mut state, &flag);
         assert_eq!(state.global.selected_pane_row, 0);
     }
 

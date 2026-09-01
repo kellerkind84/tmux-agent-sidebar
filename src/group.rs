@@ -160,18 +160,32 @@ pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGro
     for session in sessions {
         for window in &session.windows {
             for pane in &window.panes {
-                let git_info = resolve_pane_git_info_cached(pane, &mut git_cache);
-
-                let group_key = match &git_info.repo_root {
-                    Some(root) => root.clone(),
-                    None => pane.path.clone(),
-                };
-
-                let display_name = group_key
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&group_key)
-                    .to_string();
+                // Plain (non-agent) panes never resolve git info: the
+                // lightweight row never displays it, and running a `git`
+                // subprocess per unique path on every ~1s refresh tick is
+                // pure waste that gets multiplied by every shell/editor/log
+                // pane once `@sidebar_show_windows` is on. Group them by
+                // tmux session instead — free, since it's already in scope.
+                let (group_key, display_name, git_info) =
+                    if pane.agent == crate::tmux::AgentType::Unknown {
+                        (
+                            plain_group_key(&session.session_name),
+                            session.session_name.clone(),
+                            PaneGitInfo::default(),
+                        )
+                    } else {
+                        let git_info = resolve_pane_git_info_cached(pane, &mut git_cache);
+                        let group_key = match &git_info.repo_root {
+                            Some(root) => root.clone(),
+                            None => pane.path.clone(),
+                        };
+                        let display_name = group_key
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(&group_key)
+                            .to_string();
+                        (group_key, display_name, git_info)
+                    };
 
                 let has_focus = window.window_active && pane.pane_active;
 
@@ -195,6 +209,13 @@ pub fn group_panes_by_repo(sessions: &[crate::tmux::SessionInfo]) -> Vec<RepoGro
     result
 }
 
+/// Grouping key for plain panes in [`group_panes_by_repo`], namespaced so
+/// a tmux session named e.g. `myrepo` can never collide with an actual
+/// repo path that happens to end in `/myrepo`.
+fn plain_group_key(session_name: &str) -> String {
+    format!("session:{session_name}")
+}
+
 /// Group all panes by tmux session name instead of repo root. Panes keep
 /// their per-pane git info (still shown in each row) — only the grouping
 /// key changes. A session with no windows/panes never produces an empty
@@ -207,7 +228,15 @@ pub fn group_panes_by_session(sessions: &[crate::tmux::SessionInfo]) -> Vec<Repo
     for session in sessions {
         for window in &session.windows {
             for pane in &window.panes {
-                let git_info = resolve_pane_git_info_cached(pane, &mut git_cache);
+                // Plain panes never display git info (see the identical
+                // skip in `group_panes_by_repo`); the grouping key here is
+                // already the session name, so this only saves the wasted
+                // per-tick `git` subprocess spawn, not a grouping decision.
+                let git_info = if pane.agent == crate::tmux::AgentType::Unknown {
+                    PaneGitInfo::default()
+                } else {
+                    resolve_pane_git_info_cached(pane, &mut git_cache)
+                };
                 let has_focus = window.window_active && pane.pane_active;
 
                 let group = groups
@@ -230,6 +259,51 @@ pub fn group_panes_by_session(sessions: &[crate::tmux::SessionInfo]) -> Vec<Repo
     let mut result: Vec<RepoGroup> = groups.into_values().collect();
     result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     result
+}
+
+/// Strip plain (non-agent) panes back out of `sessions`, restoring the
+/// agent-only view `query_sessions()` produced before `@sidebar_show_windows`
+/// existed. Used both as the default display filter (when the toggle is
+/// off) and, unconditionally, as the input to the liveness/port-scan
+/// pipeline in `state/refresh.rs` — that pipeline only knows how to
+/// detect a live *agent* process, so feeding it a plain pane would have
+/// it "confirmed dead" (and evicted) within a couple of scan intervals.
+/// Windows/sessions left with no panes after filtering are dropped,
+/// mirroring `tmux::query::finalize_sessions`.
+pub fn agent_panes_only(sessions: &[crate::tmux::SessionInfo]) -> Vec<crate::tmux::SessionInfo> {
+    sessions
+        .iter()
+        .filter_map(|session| {
+            let windows: Vec<crate::tmux::WindowInfo> = session
+                .windows
+                .iter()
+                .filter_map(|window| {
+                    let panes: Vec<crate::tmux::PaneInfo> = window
+                        .panes
+                        .iter()
+                        .filter(|p| p.agent != crate::tmux::AgentType::Unknown)
+                        .cloned()
+                        .collect();
+                    if panes.is_empty() {
+                        None
+                    } else {
+                        Some(crate::tmux::WindowInfo {
+                            panes,
+                            ..window.clone()
+                        })
+                    }
+                })
+                .collect();
+            if windows.is_empty() {
+                None
+            } else {
+                Some(crate::tmux::SessionInfo {
+                    session_name: session.session_name.clone(),
+                    windows,
+                })
+            }
+        })
+        .collect()
 }
 
 /// Resolve a possibly-relative git path to an absolute canonical path.
@@ -314,6 +388,7 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
     }
@@ -427,6 +502,40 @@ mod tests {
 
         // Empty path pane should still be grouped (by empty key)
         assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn group_panes_by_repo_groups_plain_panes_by_session_not_git() {
+        // Plain panes must never trigger git resolution (see
+        // `plain_group_key`): even though this pane's path is a real git
+        // repo (the crate manifest dir), it should land in a
+        // session-keyed group, not the repo group real agent panes there
+        // would use.
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let plain = plain_pane("%1", manifest_dir);
+        let agent = test_pane("%2", manifest_dir);
+
+        let sessions = vec![crate::tmux::SessionInfo {
+            session_name: "work".into(),
+            windows: vec![test_window(vec![plain, agent], true)],
+        }];
+        let groups = group_panes_by_repo(&sessions);
+
+        assert_eq!(
+            groups.len(),
+            2,
+            "plain pane and agent pane sharing a repo path must not merge"
+        );
+        let plain_group = groups
+            .iter()
+            .find(|g| g.panes.iter().any(|(p, _)| p.pane_id == "%1"))
+            .expect("plain pane's group");
+        assert_eq!(plain_group.name, "work");
+        let agent_group = groups
+            .iter()
+            .find(|g| g.panes.iter().any(|(p, _)| p.pane_id == "%2"))
+            .expect("agent pane's group");
+        assert_ne!(agent_group.name, "work");
     }
 
     #[test]
@@ -559,6 +668,23 @@ mod tests {
     // ─── group_panes_by_session ─────────────────────────────────────
 
     #[test]
+    fn group_panes_by_session_skips_git_resolution_for_plain_panes() {
+        // A real git repo path, but the pane is plain — its PaneGitInfo
+        // must come back as the empty default, proving `resolve_git_info`
+        // was never invoked for it (the row never displays it anyway).
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let plain = plain_pane("%1", manifest_dir);
+        let sessions = vec![test_session(vec![test_window(vec![plain], true)])];
+
+        let groups = group_panes_by_session(&sessions);
+
+        assert_eq!(groups.len(), 1);
+        let (_, git_info) = &groups[0].panes[0];
+        assert!(git_info.repo_root.is_none());
+        assert!(git_info.branch.is_none());
+    }
+
+    #[test]
     fn group_panes_by_session_groups_regardless_of_repo() {
         let pane1 = test_pane("%1", "/tmp/repo-a");
         let pane2 = test_pane("%2", "/tmp/repo-b");
@@ -637,5 +763,58 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].name, "Alpha");
         assert_eq!(groups[1].name, "zeta");
+    }
+
+    // ─── agent_panes_only ───────────────────────────────────────────
+
+    fn plain_pane(id: &str, path: &str) -> PaneInfo {
+        let mut p = test_pane(id, path);
+        p.agent = crate::tmux::AgentType::Unknown;
+        p
+    }
+
+    #[test]
+    fn agent_panes_only_keeps_agent_panes_untouched() {
+        let sessions = vec![test_session(vec![test_window(
+            vec![test_pane("%1", "/tmp/repo")],
+            true,
+        )])];
+        let filtered = agent_panes_only(&sessions);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].windows[0].panes.len(), 1);
+        assert_eq!(filtered[0].windows[0].panes[0].pane_id, "%1");
+    }
+
+    #[test]
+    fn agent_panes_only_drops_plain_panes_from_mixed_window() {
+        let sessions = vec![test_session(vec![test_window(
+            vec![test_pane("%1", "/tmp/repo"), plain_pane("%2", "/tmp/repo")],
+            true,
+        )])];
+        let filtered = agent_panes_only(&sessions);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].windows[0].panes.len(), 1);
+        assert_eq!(filtered[0].windows[0].panes[0].pane_id, "%1");
+    }
+
+    #[test]
+    fn agent_panes_only_drops_windows_and_sessions_left_empty() {
+        let sessions = vec![
+            crate::tmux::SessionInfo {
+                session_name: "agents".into(),
+                windows: vec![test_window(vec![test_pane("%1", "/tmp/a")], true)],
+            },
+            crate::tmux::SessionInfo {
+                session_name: "plain-only".into(),
+                windows: vec![test_window(vec![plain_pane("%2", "/tmp/b")], false)],
+            },
+        ];
+        let filtered = agent_panes_only(&sessions);
+        assert_eq!(
+            filtered.len(),
+            1,
+            "a session left with zero agent panes should be dropped entirely"
+        );
+        assert_eq!(filtered[0].session_name, "agents");
     }
 }

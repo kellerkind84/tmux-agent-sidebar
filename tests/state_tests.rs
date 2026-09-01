@@ -119,6 +119,7 @@ fn test_line_to_row_two_agents() {
         session_id: None,
         session_name: String::new(),
         sidebar_spawned: false,
+        window_name: String::new(),
         bg_shell_cmd: None,
     };
     let pane2 = PaneInfo {
@@ -140,6 +141,7 @@ fn test_line_to_row_two_agents() {
         session_id: None,
         session_name: String::new(),
         sidebar_spawned: false,
+        window_name: String::new(),
         bg_shell_cmd: None,
     };
 

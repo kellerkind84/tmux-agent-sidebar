@@ -29,8 +29,8 @@ pub use options::{
     SIDEBAR_ICON_BACKGROUND, SIDEBAR_ICON_ERROR, SIDEBAR_ICON_IDLE, SIDEBAR_ICON_RUNNING,
     SIDEBAR_ICON_UNKNOWN, SIDEBAR_ICON_WAITING, SIDEBAR_NOTIFICATIONS,
     SIDEBAR_NOTIFICATIONS_EVENTS, SIDEBAR_PET, SIDEBAR_PID, SIDEBAR_POSITION, SIDEBAR_REPO_FILTER,
-    SIDEBAR_SAVED_LAYOUT, SIDEBAR_WIDTH, get_all_global_options, get_option, get_pane_option_value,
-    set_pane_option, unset_pane_option,
+    SIDEBAR_SAVED_LAYOUT, SIDEBAR_SHOW_WINDOWS, SIDEBAR_WIDTH, get_all_global_options,
+    get_bool_option, get_option, get_pane_option_value, set_pane_option, unset_pane_option,
 };
 pub use panes::{
     find_active_pane, focused_pane_path, get_pane_path, get_sidebar_pane_info,
@@ -39,8 +39,9 @@ pub use panes::{
 pub use query::query_sessions;
 pub(crate) use query::query_sessions_with_process_snapshot;
 pub use types::{
-    AgentType, CLAUDE_AGENT, CODEX_AGENT, COPILOT_AGENT, DEVIN_AGENT, HERMES_AGENT, OPENCODE_AGENT,
-    PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo, WorktreeMetadata,
+    AgentType, AttentionBucket, CLAUDE_AGENT, CODEX_AGENT, COPILOT_AGENT, DEVIN_AGENT,
+    HERMES_AGENT, OPENCODE_AGENT, PaneInfo, PaneStatus, PermissionMode, SessionInfo, WindowInfo,
+    WorktreeMetadata,
 };
 
 #[cfg(test)]

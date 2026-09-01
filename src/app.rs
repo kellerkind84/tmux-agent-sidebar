@@ -12,6 +12,11 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::SPINNER_PULSE;
 use crate::state::BottomTab;
+use crate::tmux;
+
+/// How often the event loop confirms its own pane still exists (see
+/// [`is_orphaned`] for why this exists at all).
+const ORPHAN_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 mod input;
 mod render;
@@ -43,11 +48,25 @@ pub fn run(
 
     let mut last_refresh = std::time::Instant::now();
     let mut last_spinner = std::time::Instant::now();
+    let mut last_orphan_check = std::time::Instant::now();
     let refresh_interval = Duration::from_secs(1);
     let spinner_interval = Duration::from_millis(200);
     let mut needs_redraw = true;
 
     loop {
+        if last_orphan_check.elapsed() >= ORPHAN_CHECK_INTERVAL {
+            if is_orphaned(&state.tmux_pane) {
+                // Our own pane no longer exists (killed without the process
+                // ever receiving a terminating signal — e.g. a forced
+                // kill-window, a tmux server restart, or a crash that left
+                // us reparented). Looping forever from here on would just
+                // burn CPU polling tmux/git/ps for a pane nobody can see;
+                // exit instead of accumulating as a permanent orphan.
+                return Ok(());
+            }
+            last_orphan_check = std::time::Instant::now();
+        }
+
         if needs_redraw {
             render::render_frame(terminal, &mut state)?;
             needs_redraw = false;
@@ -125,4 +144,29 @@ pub fn run(
             .global
             .flush_pending_cursor_save(std::time::Duration::from_millis(120));
     }
+}
+
+/// Whether this process should stop running: either `tmux_pane` no longer
+/// exists on the server this process talks to, or it exists but has been
+/// silently handed to a *different* sidebar instance (e.g. `respawn-pane`
+/// replacing the foreground command without ever signaling the old one —
+/// pane existence alone wouldn't catch that, since the pane id is still
+/// valid). `@sidebar_pid` is the pane-scoped marker `main.rs` writes with
+/// its own pid on startup, so whichever instance is actually running in
+/// the pane right now is the one whose pid is currently stored there.
+///
+/// Orphaned sidebar instances are a real failure mode, not a hypothetical
+/// one: a pane can be killed or repurposed in ways that don't deliver a
+/// signal this process would act on (forced `kill-window`/`kill-session`,
+/// `respawn-pane`, the tmux server itself restarting or crashing, etc.),
+/// and the event loop has no other exit condition — without this check
+/// such an instance would poll tmux/git/ps forever, one more permanent
+/// background process per incident, indefinitely compounding system load
+/// over time.
+fn is_orphaned(tmux_pane: &str) -> bool {
+    if tmux::pane_session_name(tmux_pane).is_none() {
+        return true;
+    }
+    let recorded_pid = tmux::get_pane_option_value(tmux_pane, tmux::SIDEBAR_PID);
+    !recorded_pid.is_empty() && recorded_pid != std::process::id().to_string()
 }

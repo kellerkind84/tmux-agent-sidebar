@@ -111,13 +111,22 @@ type CodexPidEntry = (String, usize, u32);
 
 /// Query all sessions, windows, and panes in a single `tmux list-panes -a` call
 /// (plus one optional `ps` call for process-backed agent checks), instead of
-/// N+1 subprocess invocations.
+/// N+1 subprocess invocations. Agent-only — equivalent to
+/// `query_sessions_with_process_snapshot(false)`.
 pub fn query_sessions() -> Vec<SessionInfo> {
-    query_sessions_with_process_snapshot().0
+    query_sessions_with_process_snapshot(false).0
 }
 
-pub(crate) fn query_sessions_with_process_snapshot() -> (Vec<SessionInfo>, Option<ProcessSnapshot>)
-{
+/// `include_plain` mirrors the live `@sidebar_show_windows` toggle. When
+/// `false`, panes with no recognized `@pane_agent` are dropped right here
+/// at parse time — the original, pre-`@sidebar_show_windows` behavior —
+/// so every tmux pane on the whole server isn't parsed, cloned, and
+/// carried through the refresh pipeline just to be filtered back out by
+/// `group::agent_panes_only` a moment later. Only pay for plain-pane
+/// parsing when the feature is actually on.
+pub(crate) fn query_sessions_with_process_snapshot(
+    include_plain: bool,
+) -> (Vec<SessionInfo>, Option<ProcessSnapshot>) {
     let pane_format = pane_format();
     let all_panes_output = match run_tmux(&["list-panes", "-a", "-F", &pane_format]) {
         Some(s) => s,
@@ -126,7 +135,7 @@ pub(crate) fn query_sessions_with_process_snapshot() -> (Vec<SessionInfo>, Optio
 
     let process_snapshot = process_snapshot_for_panes(&all_panes_output);
     let (mut sessions_map, codex_pids) =
-        build_session_hierarchy(&all_panes_output, process_snapshot.as_ref());
+        build_session_hierarchy(&all_panes_output, process_snapshot.as_ref(), include_plain);
     if !codex_pids.is_empty()
         && let Some(snapshot) = &process_snapshot
     {
@@ -141,6 +150,7 @@ pub(crate) fn query_sessions_with_process_snapshot() -> (Vec<SessionInfo>, Optio
 fn build_session_hierarchy(
     all_panes_output: &str,
     process_snapshot: Option<&ProcessSnapshot>,
+    include_plain: bool,
 ) -> (SessionMap, Vec<CodexPidEntry>) {
     let mut sessions_map: SessionMap = indexmap::IndexMap::new();
     let mut codex_pids: Vec<CodexPidEntry> = Vec::new();
@@ -171,6 +181,22 @@ fn build_session_hierarchy(
             }
         }
 
+        // Cheap early skip, before any allocation: when plain panes
+        // aren't wanted, drop unrecognized-agent panes right here —
+        // same net effect as the pre-`@sidebar_show_windows` behavior,
+        // but without paying for a `WindowInfo` entry or the full pane
+        // parse (prompt sanitization, worktree strings, etc.) for a
+        // pane that's about to be discarded anyway. This keeps the
+        // default (off) refresh cost identical to before the feature
+        // existed, regardless of how many plain tmux panes exist.
+        if !include_plain
+            && pane_fields
+                .get(pane_line_field::AGENT)
+                .is_none_or(|a| AgentType::from_label(a).is_none())
+        {
+            continue;
+        }
+
         let sessions_entry = sessions_map.entry(session_name.to_string()).or_default();
 
         let window = sessions_entry
@@ -183,7 +209,8 @@ fn build_session_hierarchy(
                 panes: Vec::new(),
             });
 
-        if let Some(pane) = parse_pane_fields_with_processes(pane_fields, process_snapshot) {
+        if let Some(mut pane) = parse_pane_fields_with_processes(pane_fields, process_snapshot) {
+            pane.window_name = window.window_name.clone();
             if pane.agent == AgentType::Codex
                 && let Some(pid) = pane.pane_pid
             {
@@ -263,7 +290,13 @@ fn parse_pane_fields_with_processes(
         return None;
     }
 
-    let agent = AgentType::from_label(&parts[pane_line_field::AGENT])?;
+    // Panes with no recognized `@pane_agent` hook are kept as
+    // `AgentType::Unknown` (plain panes) rather than skipped, so
+    // `@sidebar_show_windows` can surface them as lightweight,
+    // switch-only rows. `finalize_sessions`/`group::agent_panes_only`
+    // filter them back out when the toggle is off, preserving the
+    // pre-existing agent-only behavior by default.
+    let agent = AgentType::from_label(&parts[pane_line_field::AGENT]).unwrap_or(AgentType::Unknown);
     let current_command = parts[pane_line_field::PANE_CURRENT_COMMAND].as_str();
     let pane_pid: Option<u32> = parts[pane_line_field::PANE_PID].parse().ok();
 
@@ -347,6 +380,9 @@ fn parse_pane_fields_with_processes(
                 Some(raw.to_string())
             }
         },
+        // Filled in by `build_session_hierarchy`, which has the owning
+        // window in scope; this function only sees the pane-line suffix.
+        window_name: String::new(),
     })
 }
 
@@ -602,6 +638,7 @@ mod tests {
             session_id: None,
             session_name: String::new(),
             sidebar_spawned: false,
+            window_name: String::new(),
             bg_shell_cmd: None,
         }
     }
@@ -899,14 +936,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_pane_line_rejects_unknown_agent() {
+    fn parse_pane_line_treats_unrecognized_agent_as_plain_pane() {
+        // Panes with no recognized `@pane_agent` are kept (not rejected) as
+        // `AgentType::Unknown` so `@sidebar_show_windows` can surface them
+        // as lightweight rows; `group::agent_panes_only` is what filters
+        // them back out when the toggle is off, not this parse step.
         let mut fields = full_fields();
         fields[3] = ""; // no agent type
         let line = make_pane_line(&fields);
-        assert!(
-            parse_pane_line(&line).is_none(),
-            "empty agent should be rejected"
-        );
+        let pane = parse_pane_line(&line).expect("plain pane should still parse");
+        assert_eq!(pane.agent, AgentType::Unknown);
     }
 
     #[test]
@@ -1188,6 +1227,7 @@ mod tests {
                     session_id: None,
                     session_name: String::new(),
                     sidebar_spawned: false,
+                    window_name: String::new(),
                     bg_shell_cmd: None,
                 }],
             },
@@ -1265,6 +1305,44 @@ mod tests {
         fields.join("|")
     }
 
+    /// Same as [`make_full_pane_line`] but with `@pane_agent` left empty,
+    /// i.e. a plain (non-agent) pane.
+    fn make_plain_pane_line(session_name: &str, pane_pid: u32) -> String {
+        let mut fields: Vec<&str> = vec![""; 28];
+        fields[0] = session_name;
+        fields[1] = "@0";
+        fields[3] = "win";
+        fields[4] = "1";
+        fields[11] = "/tmp";
+        fields[14] = "%0";
+        fields[21] = "/tmp";
+        let pid_str = pane_pid.to_string();
+        fields[19] = &pid_str;
+        fields.join("|")
+    }
+
+    #[test]
+    fn build_session_hierarchy_drops_plain_panes_when_include_plain_is_false() {
+        let line = make_plain_pane_line("solo", 1);
+        let (sessions_map, _) = build_session_hierarchy(&line, None, false);
+        let sessions = finalize_sessions(sessions_map);
+        assert!(
+            sessions.is_empty(),
+            "a session whose only pane is plain must not exist at all \
+             when include_plain is false — no WindowInfo entry, nothing \
+             to filter back out downstream"
+        );
+    }
+
+    #[test]
+    fn build_session_hierarchy_keeps_plain_panes_when_include_plain_is_true() {
+        let line = make_plain_pane_line("solo", 1);
+        let (sessions_map, _) = build_session_hierarchy(&line, None, true);
+        let sessions = finalize_sessions(sessions_map);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].windows[0].panes[0].agent, AgentType::Unknown);
+    }
+
     #[test]
     fn build_session_hierarchy_dedups_nonzero_pane_pid_only() {
         // Two rows with same non-zero pane_pid: only the first is retained.
@@ -1275,7 +1353,7 @@ mod tests {
         let line_d = make_full_pane_line("grouped", 0);
 
         let input = format!("{line_a}\n{line_b}\n{line_c}\n{line_d}");
-        let (sessions_map, _) = build_session_hierarchy(&input, None);
+        let (sessions_map, _) = build_session_hierarchy(&input, None, false);
         let sessions = finalize_sessions(sessions_map);
 
         // Should produce two sessions: "primary" and "grouped"

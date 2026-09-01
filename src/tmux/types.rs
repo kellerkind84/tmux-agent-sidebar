@@ -33,6 +33,11 @@ pub struct PaneInfo {
     /// pane status is `Background` (or `Running` with a backgrounded shell
     /// still alive) so the row body can surface the actual command.
     pub bg_shell_cmd: Option<String>,
+    /// Tmux window name this pane lives in. Populated for every pane
+    /// (agent or plain) by `build_session_hierarchy`; used to label
+    /// lightweight, non-agent rows shown when `@sidebar_show_windows`
+    /// is enabled (see `crate::ui::panes::row::render_plain_pane_line`).
+    pub window_name: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,7 +103,8 @@ pub enum AgentType {
     Devin,
     Copilot,
     Hermes,
-    #[allow(dead_code)]
+    /// No recognized agent hook has claimed this pane. Used for plain
+    /// tmux windows/panes surfaced by the `@sidebar_show_windows` toggle.
     Unknown,
 }
 
@@ -181,9 +187,117 @@ impl PaneStatus {
     }
 }
 
+/// Coarse three-way classification of a pane's status, collapsing the six
+/// `PaneStatus` variants (plus the `attention` flag) into the single
+/// distinction a human skimming a status line or digest actually cares
+/// about: does this pane need me right now, or can it keep going without
+/// me? Mirrors the precedence `ColorTheme::status_color` already uses in
+/// the TUI (attention overrides status), so a pane never renders
+/// differently between the sidebar and the summary/digest CLI output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionBucket {
+    /// Blocked on a permission prompt, a notification, or has errored —
+    /// nothing will happen here until the user looks at it.
+    NeedsYou,
+    /// Actively running or driving a background shell.
+    Working,
+    /// Finished its last turn and is quietly waiting for the next prompt.
+    Idle,
+}
+
+impl PaneInfo {
+    /// Classify this pane for `summary`/`digest` output. See
+    /// [`AttentionBucket`] for the precedence rules.
+    pub fn attention_bucket(&self) -> AttentionBucket {
+        if self.attention || self.status == PaneStatus::Error {
+            AttentionBucket::NeedsYou
+        } else if matches!(self.status, PaneStatus::Running | PaneStatus::Background) {
+            AttentionBucket::Working
+        } else {
+            AttentionBucket::Idle
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_pane(status: PaneStatus, attention: bool) -> PaneInfo {
+        PaneInfo {
+            pane_id: "%1".into(),
+            pane_active: false,
+            status,
+            attention,
+            agent: AgentType::Claude,
+            path: "/tmp/project".into(),
+            current_command: String::new(),
+            prompt: String::new(),
+            prompt_is_response: false,
+            started_at: None,
+            wait_reason: String::new(),
+            permission_mode: PermissionMode::Default,
+            subagents: vec![],
+            pane_pid: None,
+            worktree: WorktreeMetadata::default(),
+            session_id: None,
+            session_name: String::new(),
+            sidebar_spawned: false,
+            window_name: String::new(),
+            bg_shell_cmd: None,
+        }
+    }
+
+    #[test]
+    fn attention_bucket_needs_you_when_attention_flag_set() {
+        assert_eq!(
+            test_pane(PaneStatus::Idle, true).attention_bucket(),
+            AttentionBucket::NeedsYou
+        );
+    }
+
+    #[test]
+    fn attention_bucket_needs_you_on_error_even_without_attention_flag() {
+        assert_eq!(
+            test_pane(PaneStatus::Error, false).attention_bucket(),
+            AttentionBucket::NeedsYou
+        );
+    }
+
+    #[test]
+    fn attention_bucket_working_for_running_and_background() {
+        assert_eq!(
+            test_pane(PaneStatus::Running, false).attention_bucket(),
+            AttentionBucket::Working
+        );
+        assert_eq!(
+            test_pane(PaneStatus::Background, false).attention_bucket(),
+            AttentionBucket::Working
+        );
+    }
+
+    #[test]
+    fn attention_bucket_idle_for_idle_and_unknown() {
+        assert_eq!(
+            test_pane(PaneStatus::Idle, false).attention_bucket(),
+            AttentionBucket::Idle
+        );
+        assert_eq!(
+            test_pane(PaneStatus::Unknown, false).attention_bucket(),
+            AttentionBucket::Idle
+        );
+    }
+
+    #[test]
+    fn attention_bucket_attention_flag_overrides_working_status() {
+        // A pane can be `Running` but still flagged for attention (e.g. a
+        // background shell that just emitted a notification); attention
+        // must win so the bucket matches what the TUI would color it.
+        assert_eq!(
+            test_pane(PaneStatus::Running, true).attention_bucket(),
+            AttentionBucket::NeedsYou
+        );
+    }
 
     #[test]
     fn pane_status_from_str_all_variants() {
